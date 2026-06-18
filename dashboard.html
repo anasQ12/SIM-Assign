@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div id="loadingState" class="loading-state">Loading dashboard...</div>
+
+      <div id="dashboardContent" style="display:none;">
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-label">Total Requests</div>
+            <div class="kpi-value blue" id="kpiTotalRequests">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">In Progress</div>
+            <div class="kpi-value amber" id="kpiInProgress">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Completed</div>
+            <div class="kpi-value green" id="kpiCompleted">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Partially Assigned</div>
+            <div class="kpi-value amber" id="kpiPartial">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Total Stations</div>
+            <div class="kpi-value blue" id="kpiTotalStations">0</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Stations Assigned</div>
+            <div class="kpi-value green" id="kpiStationsAssigned">0</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="flex-between mb-16">
+            <div style="font-size:15px; font-weight:700;">Recent Requests</div>
+            <a href="requests.html">View all →</a>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Request No</th>
+                  <th>Title</th>
+                  <th>Submitted By</th>
+                  <th>Stations</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="recentRequestsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireRole('SUPER_ADMIN');
+if (user) {
+  renderSidebar(user, 'dashboard.html');
+  renderTopBar(user, 'Dashboard');
+  loadDashboard();
+}
+
+function statusBadgeClass(status) {
+  const map = {
+    SUBMITTED: 'badge-blue',
+    IN_PROGRESS: 'badge-amber',
+    PARTIALLY_ASSIGNED: 'badge-amber',
+    COMPLETED: 'badge-green',
+    RETURNED: 'badge-red',
+  };
+  return map[status] || 'badge-gray';
+}
+
+async function loadDashboard() {
+  const { data: requests, error } = await fetchAllRequests();
+
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('dashboardContent').style.display = 'block';
+
+  if (error) {
+    showToast('Error loading dashboard data.', 'error');
+    return;
+  }
+
+  const reqList = requests || [];
+
+  document.getElementById('kpiTotalRequests').textContent = reqList.length;
+  document.getElementById('kpiInProgress').textContent = reqList.filter(r => r.status === 'IN_PROGRESS').length;
+  document.getElementById('kpiCompleted').textContent = reqList.filter(r => r.status === 'COMPLETED').length;
+  document.getElementById('kpiPartial').textContent = reqList.filter(r => r.status === 'PARTIALLY_ASSIGNED').length;
+
+  const totalStations = reqList.reduce((sum, r) => sum + (r.total_stations || 0), 0);
+  const totalAssigned = reqList.reduce((sum, r) => sum + (r.assigned_count || 0), 0);
+  document.getElementById('kpiTotalStations').textContent = totalStations;
+  document.getElementById('kpiStationsAssigned').textContent = totalAssigned;
+
+  const recentBody = document.getElementById('recentRequestsBody');
+  const recent = reqList.slice(0, 10);
+  if (recent.length === 0) {
+    recentBody.innerHTML = `<tr><td colspan="5" class="text-center text-gray">No requests yet.</td></tr>`;
+  } else {
+    recentBody.innerHTML = recent.map(r => `
+      <tr style="cursor:pointer" onclick="window.location.href='request-detail.html?id=${r.id}'">
+        <td><strong>${escapeHtml(r.request_no)}</strong></td>
+        <td>${escapeHtml(r.title)}</td>
+        <td>${escapeHtml(r.submitted_by_name)}</td>
+        <td>${r.assigned_count} / ${r.total_stations}</td>
+        <td><span class="badge ${statusBadgeClass(r.status)}">${r.status.replace(/_/g, ' ')}</span></td>
+      </tr>
+    `).join('');
+  }
+}
+</script>
+</body>
+</html>

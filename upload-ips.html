@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload IPs — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="card mb-24">
+        <div style="font-size:15px; font-weight:700; margin-bottom:8px;">Upload IPs CSV</div>
+        <div class="text-sm text-gray mb-16">
+          Bulk-add IP addresses to the registry so SCADA gets blocked from assigning a duplicate. Required column: <strong>IP</strong>.
+        </div>
+
+        <div class="form-group">
+          <input type="file" id="csvFile" accept=".csv" class="form-input">
+        </div>
+        <button class="btn btn-primary" onclick="handleUpload()" id="uploadBtn">Upload</button>
+
+        <div id="uploadResult" style="margin-top:20px;"></div>
+      </div>
+
+      <div class="card">
+        <div style="font-size:15px; font-weight:700; margin-bottom:4px;">CSV Format Example</div>
+        <pre style="background:var(--gray-50); padding:14px; border-radius:8px; font-size:12.5px; overflow-x:auto; margin-top:10px;">IP
+10.10.1.5
+10.10.1.6
+10.10.1.7</pre>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script src="js/csv.js"></script>
+<script>
+const user = requireRole('SUPER_ADMIN');
+if (user) {
+  renderSidebar(user, 'upload-ips.html');
+  renderTopBar(user, 'Upload IPs CSV');
+}
+
+const HEADER_MAP = {
+  'ip': 'ip',
+};
+
+async function handleUpload() {
+  const fileInput = document.getElementById('csvFile');
+  const file = fileInput.files[0];
+  if (!file) {
+    showToast('Please choose a CSV file first.', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  try {
+    const text = await readFileAsText(file);
+    const { records, errors } = parseCSVToObjects(text, HEADER_MAP);
+
+    if (errors.length > 0) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">${errors.map(e => escapeHtml(e)).join('<br>')}</div>`;
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    if (records.length === 0) {
+      showToast('No data rows found in the file.', 'warning');
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    const ipRegex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    const invalidRows = records.filter(r => !ipRegex.test(r.ip));
+    if (invalidRows.length > 0) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">Found ${invalidRows.length} invalid IP address(es) in the file, e.g. "${escapeHtml(invalidRows[0].ip)}". Please fix and re-upload.</div>`;
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    const rows = records.map(r => ({ ip: r.ip }));
+
+    const { data, error } = await insertIpRegistryBulk(rows);
+
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+
+    if (error) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">Upload failed: ${escapeHtml(error.message)}</div>`;
+      return;
+    }
+
+    await writeAuditLog({
+      user_name: user.name,
+      action: 'STATION_UPLOADED',
+      remarks: `Uploaded ${rows.length} IP addresses via CSV`,
+    });
+
+    document.getElementById('uploadResult').innerHTML =
+      `<div class="alert alert-success">Successfully added/updated ${data.length} IP addresses in the registry.</div>`;
+    showToast(`${data.length} IPs uploaded.`, 'success');
+    fileInput.value = '';
+
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+    showToast('Error reading file: ' + err.message, 'error');
+  }
+}
+</script>
+</body>
+</html>

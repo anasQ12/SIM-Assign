@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Assign SIM/IP — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div id="loadingState" class="loading-state">Loading request...</div>
+
+      <div id="content" style="display:none;">
+
+        <div class="card mb-24">
+          <div class="flex-between mb-12">
+            <div>
+              <div style="font-size:17px; font-weight:700;" id="reqTitle"></div>
+              <div class="text-sm text-gray" id="reqMeta"></div>
+            </div>
+            <span class="badge" id="reqStatusBadge"></span>
+          </div>
+          <div class="progress-bar-track" style="height:10px;">
+            <div class="progress-bar-fill" id="progressFill" style="width:0%;"></div>
+          </div>
+          <div class="text-sm text-gray" style="margin-top:6px;" id="progressText"></div>
+        </div>
+
+        <div class="flex-between mb-16">
+          <div style="font-size:15px; font-weight:700;">Stations</div>
+          <div class="flex gap-8">
+            <button class="btn btn-success" id="completeBtn" onclick="completeRequest()">&#10003; Complete Request</button>
+            <button class="btn btn-ghost" onclick="returnToAdmin()">&#8617; Return to Admin</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>EQ Number</th><th>Type / Vendor</th><th>Modem</th>
+                  <th>Serial No</th><th>IP</th><th>Status</th><th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="stationsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Manual SIM/IP entry Modal -->
+<div class="modal-overlay" id="simModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Assign SIM/IP — <span id="modalEqNumber"></span></div>
+      <button class="modal-close" onclick="closeSimModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">SIM Serial Number *</label>
+        <input type="text" class="form-input" id="manualSerial" placeholder="e.g. SIM-00123">
+      </div>
+      <div class="form-group">
+        <label class="form-label">IP Address *</label>
+        <input type="text" class="form-input" id="manualIP" placeholder="e.g. 10.10.1.5">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeSimModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="assignManual()">Assign</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireRole('STN_SCADA', 'SUPER_ADMIN');
+const requestId = new URLSearchParams(window.location.search).get('id');
+
+if (user) {
+  renderSidebar(user, 'requests.html');
+  renderTopBar(user, 'Assign SIM/IP');
+}
+
+if (!requestId) {
+  window.location.href = 'requests.html';
+}
+
+let currentRequest = null;
+let currentStations = [];
+let activeStationForAssignment = null;
+
+const STATUS_BADGE = {
+  SUBMITTED: 'badge-blue', IN_PROGRESS: 'badge-amber', PARTIALLY_ASSIGNED: 'badge-amber',
+  COMPLETED: 'badge-green', RETURNED: 'badge-red',
+};
+const ASSIGN_BADGE = { UNASSIGNED: 'badge-blue', ASSIGNED: 'badge-green' };
+
+async function loadRequest() {
+  const { data: req, error: reqErr } = await fetchRequestById(requestId);
+  if (reqErr || !req) {
+    showToast('Request not found.', 'error');
+    setTimeout(() => window.location.href = 'requests.html', 1500);
+    return;
+  }
+  currentRequest = req;
+
+  const { data: stations, error: stErr } = await fetchStationsForRequest(requestId);
+  if (stErr) {
+    showToast('Error loading stations: ' + stErr.message, 'error');
+    return;
+  }
+  currentStations = stations || [];
+
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+  renderHeader();
+  renderStationsTable();
+}
+
+function renderHeader() {
+  const r = currentRequest;
+  document.getElementById('reqTitle').textContent = `${r.request_no} — ${r.title}`;
+  document.getElementById('reqMeta').textContent = `Submitted by ${r.submitted_by_name} · ${currentStations.length} stations`;
+  document.getElementById('reqStatusBadge').className = `badge ${STATUS_BADGE[r.status] || 'badge-gray'}`;
+  document.getElementById('reqStatusBadge').textContent = r.status.replace(/_/g, ' ');
+
+  const assignedCount = currentStations.filter(s => s.assignment_status === 'ASSIGNED').length;
+  const pct = currentStations.length > 0 ? Math.round((assignedCount / currentStations.length) * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${assignedCount} of ${currentStations.length} stations assigned (${pct}%)`;
+
+  document.getElementById('completeBtn').disabled = r.status === 'COMPLETED';
+}
+
+function renderStationsTable() {
+  document.getElementById('stationsBody').innerHTML = currentStations.map(s => `
+    <tr>
+      <td><strong>${escapeHtml(s.eq_number)}</strong></td>
+      <td>${escapeHtml(s.type)} / ${escapeHtml(s.vendor)}</td>
+      <td>${escapeHtml(s.modem)}</td>
+      <td>${escapeHtml(s.serial_no || '—')}</td>
+      <td>${escapeHtml(s.ip || '—')}</td>
+      <td><span class="badge ${ASSIGN_BADGE[s.assignment_status] || 'badge-gray'}">${s.assignment_status.replace(/_/g, ' ')}</span></td>
+      <td>
+        ${currentRequest.status === 'COMPLETED'
+          ? '—'
+          : `<button class="btn btn-secondary btn-sm" onclick="openSimModal('${s.id}')">${s.assignment_status === 'ASSIGNED' ? 'Reassign' : 'Assign SIM/IP'}</button>`
+        }
+      </td>
+    </tr>
+  `).join('');
+}
+
+function openSimModal(stationId) {
+  activeStationForAssignment = currentStations.find(s => s.id === stationId);
+  document.getElementById('modalEqNumber').textContent = activeStationForAssignment.eq_number;
+  document.getElementById('manualSerial').value = activeStationForAssignment.serial_no || '';
+  document.getElementById('manualIP').value = activeStationForAssignment.ip || '';
+  document.getElementById('simModal').classList.add('open');
+}
+
+function closeSimModal() {
+  document.getElementById('simModal').classList.remove('open');
+  activeStationForAssignment = null;
+}
+
+async function assignManual() {
+  const serial = document.getElementById('manualSerial').value.trim();
+  const ip = document.getElementById('manualIP').value.trim();
+
+  if (!serial || !ip) {
+    showToast('Please enter both Serial No and IP.', 'warning');
+    return;
+  }
+
+  const ipRegex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+  if (!ipRegex.test(ip)) {
+    showToast('Invalid IP address format.', 'error');
+    return;
+  }
+
+  const station = activeStationForAssignment;
+
+  // Skip the duplicate check if we're reassigning the exact same IP this
+  // station already has (otherwise it would block its own re-save).
+  if (ip !== station.ip) {
+    const { data: existingIp, error: ipCheckErr } = await checkIpExists(ip);
+    if (ipCheckErr) {
+      showToast('Error checking IP: ' + ipCheckErr.message, 'error');
+      return;
+    }
+    if (existingIp) {
+      showToast('This IP address is already in use. Please choose a different one.', 'error', 6000);
+      return;
+    }
+  }
+
+  const oldValue = station.serial_no ? `${station.serial_no} / ${station.ip}` : 'unassigned';
+
+  const { error: stationErr } = await updateRequestStation(station.id, {
+    serial_no: serial,
+    ip: ip,
+    assignment_status: 'ASSIGNED',
+    assigned_by_name: user.name,
+    assigned_at: new Date().toISOString(),
+  });
+
+  if (stationErr) {
+    showToast('Error assigning: ' + stationErr.message, 'error');
+    return;
+  }
+
+  // Register this IP so future assignments correctly see it as already used.
+  const { error: ipRegError } = await insertIpRegistryOne(ip);
+  if (ipRegError) {
+    showToast('SIM assigned, but registering the IP failed: ' + ipRegError.message, 'warning', 6000);
+  }
+
+  await writeAuditLog({
+    user_name: user.name,
+    action: 'SIM_ASSIGNED',
+    request_no: currentRequest.request_no,
+    eq_number: station.eq_number,
+    old_value: oldValue,
+    new_value: `${serial} / ${ip}`,
+  });
+
+  const { data: refreshedStations } = await fetchStationsForRequest(requestId);
+  const newAssignedCount = (refreshedStations || []).filter(s => s.assignment_status === 'ASSIGNED').length;
+  await updateRequest(requestId, {
+    assigned_count: newAssignedCount,
+    status: newAssignedCount === currentStations.length ? currentRequest.status : 'IN_PROGRESS',
+  });
+
+  showToast(`SIM assigned to ${station.eq_number}.`, 'success');
+  closeSimModal();
+  await loadRequest();
+}
+
+async function completeRequest() {
+  const allAssigned = currentStations.every(s => s.assignment_status === 'ASSIGNED');
+
+  if (!allAssigned) {
+    const proceedPartial = confirm(
+      'Not all stations are assigned. Click OK to finalize as PARTIALLY ASSIGNED, or Cancel to keep working.'
+    );
+    if (!proceedPartial) return;
+
+    await updateRequest(requestId, { status: 'PARTIALLY_ASSIGNED' });
+    await writeAuditLog({
+      user_name: user.name, action: 'STATUS_CHANGED', request_no: currentRequest.request_no,
+      old_value: currentRequest.status, new_value: 'PARTIALLY_ASSIGNED',
+    });
+    showToast('Request finalized as Partially Assigned.', 'warning');
+    setTimeout(() => window.location.href = `request-detail.html?id=${requestId}`, 1200);
+    return;
+  }
+
+  await updateRequest(requestId, { status: 'COMPLETED', completed_at: new Date().toISOString() });
+  await writeAuditLog({
+    user_name: user.name, action: 'REQUEST_COMPLETED', request_no: currentRequest.request_no,
+    old_value: currentRequest.status, new_value: 'COMPLETED',
+  });
+  showToast('Request marked as COMPLETED!', 'success');
+  setTimeout(() => window.location.href = `request-detail.html?id=${requestId}`, 1200);
+}
+
+async function returnToAdmin() {
+  if (!confirm('Return this request to the Station Admin? They will be notified to review it.')) return;
+
+  await updateRequest(requestId, { status: 'RETURNED' });
+  await writeAuditLog({
+    user_name: user.name, action: 'REQUEST_RETURNED', request_no: currentRequest.request_no,
+    old_value: currentRequest.status, new_value: 'RETURNED',
+  });
+  showToast('Request returned to Admin.', 'warning');
+  setTimeout(() => window.location.href = 'requests.html', 1200);
+}
+
+loadRequest();
+</script>
+</body>
+</html>

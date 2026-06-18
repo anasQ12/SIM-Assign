@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Audit Log — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="filters-bar">
+        <input type="text" class="form-input" id="searchInput" placeholder="Search request no, EQ number, or user..." oninput="renderTable()">
+        <select class="form-select" id="actionFilter" onchange="renderTable()">
+          <option value="">All actions</option>
+          <option value="REQUEST_SUBMITTED">Request Submitted</option>
+          <option value="STATION_UPLOADED">Station Uploaded</option>
+          <option value="SIM_CREATED">SIM Created</option>
+          <option value="SIM_UPDATED">SIM Updated</option>
+          <option value="SIM_ASSIGNED">SIM Assigned</option>
+          <option value="STATUS_CHANGED">Status Changed</option>
+          <option value="REQUEST_COMPLETED">Request Completed</option>
+          <option value="REQUEST_RETURNED">Request Returned</option>
+          <option value="FINAL_FILE_GENERATED">Final File Generated</option>
+          <option value="USER_CREATED">User Created</option>
+        </select>
+        <input type="date" class="form-input" id="dateFrom" onchange="loadLogs()">
+        <span class="text-sm text-gray">to</span>
+        <input type="date" class="form-input" id="dateTo" onchange="loadLogs()">
+        <button class="btn btn-secondary" onclick="clearFilters()">Clear</button>
+      </div>
+
+      <div class="card">
+        <div id="loadingState" class="loading-state">Loading audit log...</div>
+        <div id="emptyState" class="empty-state" style="display:none;">
+          <div class="empty-state-icon">&#128220;</div>
+          <div class="empty-state-text">No audit log entries found.</div>
+        </div>
+        <div id="tableWrap" class="table-wrap" style="display:none;">
+          <table>
+            <thead>
+              <tr>
+                <th>Date / Time</th><th>User</th><th>Action</th>
+                <th>Request No</th><th>EQ Number</th><th>Old Value</th><th>New Value</th><th>Remarks</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireRole('SUPER_ADMIN', 'STN_SCADA');
+if (user) {
+  renderSidebar(user, 'audit-log.html');
+  renderTopBar(user, 'Audit Log');
+  loadLogs();
+}
+
+let allLogs = [];
+
+const ACTION_BADGE = {
+  REQUEST_SUBMITTED: 'badge-blue',
+  STATION_UPLOADED: 'badge-blue',
+  SIM_CREATED: 'badge-blue',
+  SIM_UPDATED: 'badge-amber',
+  SIM_ASSIGNED: 'badge-green',
+  STATUS_CHANGED: 'badge-amber',
+  REQUEST_COMPLETED: 'badge-green',
+  REQUEST_RETURNED: 'badge-red',
+  FINAL_FILE_GENERATED: 'badge-green',
+  USER_CREATED: 'badge-blue',
+};
+
+async function loadLogs() {
+  const dateFrom = document.getElementById('dateFrom').value;
+  const dateTo = document.getElementById('dateTo').value;
+
+  const filters = {};
+  if (dateFrom) filters.dateFrom = new Date(dateFrom).toISOString();
+  if (dateTo) {
+    const end = new Date(dateTo);
+    end.setHours(23, 59, 59);
+    filters.dateTo = end.toISOString();
+  }
+
+  const { data, error } = await fetchAuditLogs(filters);
+  document.getElementById('loadingState').style.display = 'none';
+
+  if (error) {
+    showToast('Error loading audit log: ' + error.message, 'error');
+    return;
+  }
+
+  allLogs = data || [];
+  if (allLogs.length === 0) {
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('tableWrap').style.display = 'none';
+    return;
+  }
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('tableWrap').style.display = 'block';
+  renderTable();
+}
+
+function renderTable() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const actionFilter = document.getElementById('actionFilter').value;
+
+  const filtered = allLogs.filter(log => {
+    const matchesSearch = !search ||
+      (log.request_no || '').toLowerCase().includes(search) ||
+      (log.eq_number || '').toLowerCase().includes(search) ||
+      (log.user_name || '').toLowerCase().includes(search);
+    const matchesAction = !actionFilter || log.action === actionFilter;
+    return matchesSearch && matchesAction;
+  });
+
+  document.getElementById('tableBody').innerHTML = filtered.map(log => `
+    <tr>
+      <td class="text-sm text-gray">${new Date(log.created_at).toLocaleString()}</td>
+      <td><strong>${escapeHtml(log.user_name)}</strong></td>
+      <td><span class="badge ${ACTION_BADGE[log.action] || 'badge-gray'}">${log.action.replace(/_/g, ' ')}</span></td>
+      <td>${escapeHtml(log.request_no || '—')}</td>
+      <td>${escapeHtml(log.eq_number || '—')}</td>
+      <td class="text-sm">${escapeHtml(log.old_value || '—')}</td>
+      <td class="text-sm">${escapeHtml(log.new_value || '—')}</td>
+      <td class="text-sm text-gray">${escapeHtml(log.remarks || '—')}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="8" class="text-center text-gray">No matches found.</td></tr>`;
+}
+
+function clearFilters() {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('actionFilter').value = '';
+  document.getElementById('dateFrom').value = '';
+  document.getElementById('dateTo').value = '';
+  loadLogs();
+}
+</script>
+</body>
+</html>

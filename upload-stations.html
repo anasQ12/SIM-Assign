@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload Stations — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="card mb-24">
+        <div style="font-size:15px; font-weight:700; margin-bottom:8px;">Upload Stations CSV</div>
+        <div class="text-sm text-gray mb-16">
+          Bulk-add stations to the registry. Required columns: <strong>EQ NUMBER, TYPE, VENDOR, MODEM</strong>. Type must be exactly "Smart RMU" or "Smart OH".
+          Re-uploading a CSV with an EQ Number + Type combo that already exists will update its Vendor/Modem rather than create a duplicate.
+        </div>
+
+        <div class="form-group">
+          <input type="file" id="csvFile" accept=".csv" class="form-input">
+        </div>
+        <button class="btn btn-primary" onclick="handleUpload()" id="uploadBtn">Upload</button>
+
+        <div id="uploadResult" style="margin-top:20px;"></div>
+      </div>
+
+      <div class="card">
+        <div style="font-size:15px; font-weight:700; margin-bottom:4px;">CSV Format Example</div>
+        <pre style="background:var(--gray-50); padding:14px; border-radius:8px; font-size:12.5px; overflow-x:auto; margin-top:10px;">EQ NUMBER,TYPE,VENDOR,MODEM
+EQ-1001,Smart RMU,ABB,MDM-100
+EQ-1002,Smart OH,Siemens,MDM-101</pre>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script src="js/csv.js"></script>
+<script>
+const user = requireRole('SUPER_ADMIN');
+if (user) {
+  renderSidebar(user, 'upload-stations.html');
+  renderTopBar(user, 'Upload Stations CSV');
+}
+
+const HEADER_MAP = {
+  'eq number': 'eq_number',
+  'type': 'type',
+  'vendor': 'vendor',
+  'modem': 'modem',
+};
+
+async function handleUpload() {
+  const fileInput = document.getElementById('csvFile');
+  const file = fileInput.files[0];
+  if (!file) {
+    showToast('Please choose a CSV file first.', 'warning');
+    return;
+  }
+
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+
+  try {
+    const text = await readFileAsText(file);
+    const { records, errors } = parseCSVToObjects(text, HEADER_MAP);
+
+    if (errors.length > 0) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">${errors.map(e => escapeHtml(e)).join('<br>')}</div>`;
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    if (records.length === 0) {
+      showToast('No data rows found in the file.', 'warning');
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    const validTypes = ['Smart RMU', 'Smart OH'];
+    const invalidRows = records.filter(r => !validTypes.includes(r.type));
+    if (invalidRows.length > 0) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">Found ${invalidRows.length} row(s) with an invalid Type, e.g. "${escapeHtml(invalidRows[0].type)}". Type must be exactly "Smart RMU" or "Smart OH".</div>`;
+      btn.disabled = false;
+      btn.textContent = 'Upload';
+      return;
+    }
+
+    const rows = records.map(r => ({
+      eq_number: r.eq_number,
+      type: r.type,
+      vendor: r.vendor,
+      modem: r.modem,
+    }));
+
+    const { data, error } = await insertStationsMasterBulk(rows);
+
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+
+    if (error) {
+      document.getElementById('uploadResult').innerHTML =
+        `<div class="alert alert-error">Upload failed: ${escapeHtml(error.message)}</div>`;
+      return;
+    }
+
+    await writeAuditLog({
+      user_name: user.name,
+      action: 'STATION_UPLOADED',
+      remarks: `Uploaded ${rows.length} stations via CSV`,
+    });
+
+    document.getElementById('uploadResult').innerHTML =
+      `<div class="alert alert-success">Successfully added/updated ${data.length} stations in the registry.</div>`;
+    showToast(`${data.length} stations uploaded.`, 'success');
+    fileInput.value = '';
+
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Upload';
+    showToast('Error reading file: ' + err.message, 'error');
+  }
+}
+</script>
+</body>
+</html>

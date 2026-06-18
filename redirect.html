@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Redirecting...</title>
+</head>
+<body>
+<script src="js/auth.js"></script>
+<script>
+const user = getSession();
+if (!user) {
+  window.location.href = 'login.html';
+} else if (user.role === 'SUPER_ADMIN') {
+  window.location.href = 'dashboard.html';
+} else if (user.role === 'STN_SCADA') {
+  window.location.href = 'requests.html';
+} else if (user.role === 'STN_ADMIN') {
+  window.location.href = 'requests.html';
+} else {
+  window.location.href = 'login.html';
+}
+</script>
+</body>
+</html>

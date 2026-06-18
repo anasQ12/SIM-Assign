@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Requests — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="flex-between mb-16">
+        <div class="filters-bar" style="margin-bottom:0;">
+          <input type="text" class="form-input" id="searchInput" placeholder="Search by request no or title..." oninput="renderTable()">
+          <select class="form-select" id="statusFilter" onchange="renderTable()">
+            <option value="">All statuses</option>
+            <option value="SUBMITTED">Submitted</option>
+            <option value="IN_PROGRESS">In Progress</option>
+            <option value="PARTIALLY_ASSIGNED">Partially Assigned</option>
+            <option value="COMPLETED">Completed</option>
+            <option value="RETURNED">Returned</option>
+          </select>
+        </div>
+        <a href="new-request.html" class="btn btn-primary" id="newRequestBtn" style="display:none;">+ New Request</a>
+      </div>
+
+      <div class="card">
+        <div id="loadingState" class="loading-state">Loading requests...</div>
+        <div id="emptyState" class="empty-state" style="display:none;">
+          <div class="empty-state-icon">&#128203;</div>
+          <div class="empty-state-text">No requests found.</div>
+        </div>
+        <div id="tableWrap" class="table-wrap" style="display:none;">
+          <table>
+            <thead>
+              <tr>
+                <th>Request No</th><th>Title</th><th>Submitted By</th><th>Stations</th>
+                <th>Progress</th><th>Status</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireAuth();
+if (user) {
+  renderSidebar(user, 'requests.html');
+  const titles = { SUPER_ADMIN: 'All Requests', STN_ADMIN: 'My Requests', STN_SCADA: 'Requests Queue' };
+  renderTopBar(user, titles[user.role] || 'Requests');
+  if (user.role === 'STN_ADMIN') {
+    document.getElementById('newRequestBtn').style.display = 'inline-flex';
+  }
+  loadRequests();
+}
+
+let allRequests = [];
+
+const STATUS_BADGE = {
+  SUBMITTED: 'badge-blue',
+  IN_PROGRESS: 'badge-amber',
+  PARTIALLY_ASSIGNED: 'badge-amber',
+  COMPLETED: 'badge-green',
+  RETURNED: 'badge-red',
+};
+
+async function loadRequests() {
+  const { data, error } = await fetchAllRequests();
+  document.getElementById('loadingState').style.display = 'none';
+
+  if (error) {
+    showToast('Error loading requests: ' + error.message, 'error');
+    return;
+  }
+
+  let requests = data || [];
+
+  // STN_ADMIN only sees their own requests
+  if (user.role === 'STN_ADMIN') {
+    requests = requests.filter(r => r.submitted_by_payroll === user.payroll_no);
+  }
+
+  allRequests = requests;
+
+  if (allRequests.length === 0) {
+    document.getElementById('emptyState').style.display = 'block';
+    return;
+  }
+  document.getElementById('tableWrap').style.display = 'block';
+  renderTable();
+}
+
+function renderTable() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const statusFilter = document.getElementById('statusFilter').value;
+
+  const filtered = allRequests.filter(r => {
+    const matchesSearch = r.request_no.toLowerCase().includes(search) || r.title.toLowerCase().includes(search);
+    const matchesStatus = !statusFilter || r.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  document.getElementById('tableBody').innerHTML = filtered.map(r => {
+    const pct = r.total_stations > 0 ? Math.round((r.assigned_count / r.total_stations) * 100) : 0;
+    const actionLabel = user.role === 'STN_SCADA' ? 'Assign' : 'View';
+    const actionPage = user.role === 'STN_SCADA' && r.status !== 'COMPLETED'
+      ? `assign.html?id=${r.id}`
+      : `request-detail.html?id=${r.id}`;
+    return `
+      <tr>
+        <td><strong>${escapeHtml(r.request_no)}</strong></td>
+        <td>${escapeHtml(r.title)}</td>
+        <td>${escapeHtml(r.submitted_by_name)}</td>
+        <td>${r.total_stations}</td>
+        <td>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="progress-bar-track" style="width:70px;">
+              <div class="progress-bar-fill" style="width:${pct}%;"></div>
+            </div>
+            <span class="text-sm text-gray">${pct}%</span>
+          </div>
+        </td>
+        <td><span class="badge ${STATUS_BADGE[r.status] || 'badge-gray'}">${r.status.replace(/_/g, ' ')}</span></td>
+        <td><a href="${actionPage}" class="btn btn-secondary btn-sm">${actionLabel}</a></td>
+      </tr>
+    `;
+  }).join('') || `<tr><td colspan="7" class="text-center text-gray">No matches found.</td></tr>`;
+}
+</script>
+</body>
+</html>

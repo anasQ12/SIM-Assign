@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stations Master List — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="filters-bar">
+        <input type="text" class="form-input" id="searchInput" placeholder="Search by EQ Number, Type, or Vendor..." oninput="renderTable()">
+      </div>
+
+      <div class="card">
+        <div id="loadingState" class="loading-state">Loading registry...</div>
+        <div id="emptyState" class="empty-state" style="display:none;">
+          <div class="empty-state-icon">&#127959;</div>
+          <div class="empty-state-text">No stations in the registry yet. They'll appear here once added via a request or CSV upload.</div>
+        </div>
+        <div id="tableWrap" class="table-wrap" style="display:none;">
+          <table>
+            <thead><tr><th>EQ Number</th><th>Type</th><th>Vendor</th><th>Modem</th><th>Added On</th></tr></thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireRole('SUPER_ADMIN');
+if (user) {
+  renderSidebar(user, 'stations-master.html');
+  renderTopBar(user, 'Stations Master List');
+  loadStations();
+}
+
+let allStations = [];
+
+async function loadStations() {
+  const { data, error } = await fetchStationsMaster();
+  document.getElementById('loadingState').style.display = 'none';
+
+  if (error) {
+    showToast('Error loading registry: ' + error.message, 'error');
+    return;
+  }
+
+  allStations = data || [];
+  if (allStations.length === 0) {
+    document.getElementById('emptyState').style.display = 'block';
+    document.getElementById('tableWrap').style.display = 'none';
+    return;
+  }
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('tableWrap').style.display = 'block';
+  renderTable();
+}
+
+function renderTable() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+
+  const filtered = allStations.filter(s =>
+    !search ||
+    s.eq_number.toLowerCase().includes(search) ||
+    s.type.toLowerCase().includes(search) ||
+    s.vendor.toLowerCase().includes(search)
+  );
+
+  document.getElementById('tableBody').innerHTML = filtered.map(s => `
+    <tr>
+      <td><strong>${escapeHtml(s.eq_number)}</strong></td>
+      <td>${escapeHtml(s.type)}</td>
+      <td>${escapeHtml(s.vendor)}</td>
+      <td>${escapeHtml(s.modem)}</td>
+      <td class="text-sm text-gray">${new Date(s.created_at).toLocaleDateString()}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="5" class="text-center text-gray">No matches found.</td></tr>`;
+}
+</script>
+</body>
+</html>
