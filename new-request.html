@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>New Request — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div class="card mb-24">
+        <div style="font-size:15px; font-weight:700; margin-bottom:4px;">Add Station</div>
+        <div class="text-sm text-gray mb-16">Enter the EQ Number and Type first — the system checks if that combination already exists before you fill in the rest.</div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">EQ Number *</label>
+            <input type="text" class="form-input" id="eqNumberInput" placeholder="e.g. EQ-1001" oninput="resetEqCheck()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type *</label>
+            <select class="form-select" id="typeSelectCheck" onchange="resetEqCheck()">
+              <option value="">Select type...</option>
+              <option value="Smart RMU">Smart RMU</option>
+              <option value="Smart OH">Smart OH</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-secondary" onclick="checkEqNumber()" id="checkEqBtn">Check</button>
+        <div id="eqCheckResult" style="margin-top:10px;"></div>
+
+        <div id="restOfForm" style="display:none; margin-top:16px;">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Vendor *</label>
+              <input type="text" class="form-input" id="vendorInput" placeholder="e.g. ABB">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Modem *</label>
+              <input type="text" class="form-input" id="modemInput" placeholder="e.g. MDM-100">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">X (Longitude)</label>
+              <input type="text" class="form-input" id="longitudeInput" placeholder="e.g. 46.6753">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Y (Latitude)</label>
+              <input type="text" class="form-input" id="latitudeInput" placeholder="e.g. 24.7136">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Location (full URL)</label>
+            <input type="text" class="form-input" id="locationUrlInput" placeholder="Auto-filled from X/Y if left blank — or paste your own link">
+          </div>
+          <button class="btn btn-primary" onclick="addStation()">+ Add to Request</button>
+        </div>
+      </div>
+
+      <div class="card mb-24">
+        <div class="flex-between mb-16">
+          <div style="font-size:15px; font-weight:700;">Stations in this Request</div>
+          <div class="badge badge-blue" id="stationCountBadge">0 stations</div>
+        </div>
+        <div id="stationsListEmpty" class="empty-state" style="padding:30px;">
+          <div class="empty-state-text">No stations added yet.</div>
+        </div>
+        <div id="stationsTableWrap" class="table-wrap" style="display:none;">
+          <table>
+            <thead><tr><th>EQ Number</th><th>Type</th><th>Vendor</th><th>Modem</th><th>X / Y</th><th></th></tr></thead>
+            <tbody id="stationsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="flex" style="justify-content:flex-end;">
+        <button class="btn btn-primary" style="padding:11px 24px;" onclick="submitRequest()">Submit Request →</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireRole('STN_ADMIN', 'SUPER_ADMIN');
+if (user) {
+  renderSidebar(user, 'new-request.html');
+  renderTopBar(user, 'New Station Request');
+}
+
+let stationsToSubmit = [];
+let eqNumberVerified = false;
+
+async function checkEqNumber() {
+  const eqNumber = document.getElementById('eqNumberInput').value.trim();
+  const type = document.getElementById('typeSelectCheck').value;
+
+  if (!eqNumber) {
+    showToast('Please enter an EQ Number first.', 'warning');
+    return;
+  }
+  if (!type) {
+    showToast('Please select a Type first.', 'warning');
+    return;
+  }
+
+  // Check against stations already added in this not-yet-submitted request
+  const alreadyInList = stationsToSubmit.find(
+    s => s.eq_number.toLowerCase() === eqNumber.toLowerCase() && s.type === type
+  );
+  if (alreadyInList) {
+    document.getElementById('eqCheckResult').innerHTML =
+      `<span class="badge badge-red">This EQ Number + Type is already added to this request</span>`;
+    document.getElementById('restOfForm').style.display = 'none';
+    eqNumberVerified = false;
+    return;
+  }
+
+  const btn = document.getElementById('checkEqBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+
+  const { data, error } = await checkStationExists(eqNumber, type);
+
+  btn.disabled = false;
+  btn.textContent = 'Check';
+
+  if (error) {
+    showToast('Error checking station: ' + error.message, 'error');
+    return;
+  }
+
+  if (data) {
+    document.getElementById('eqCheckResult').innerHTML =
+      `<span class="badge badge-red">This EQ Number + Type already exists in the system</span>`;
+    document.getElementById('restOfForm').style.display = 'none';
+    eqNumberVerified = false;
+  } else {
+    document.getElementById('eqCheckResult').innerHTML =
+      `<span class="badge badge-green">Available — fill in the details below</span>`;
+    document.getElementById('restOfForm').style.display = 'block';
+    eqNumberVerified = true;
+  }
+}
+
+function resetEqCheck() {
+  document.getElementById('eqCheckResult').innerHTML = '';
+  document.getElementById('restOfForm').style.display = 'none';
+  eqNumberVerified = false;
+}
+
+function addStation() {
+  if (!eqNumberVerified) {
+    showToast('Please check the EQ Number and Type first.', 'warning');
+    return;
+  }
+
+  const eqNumber = document.getElementById('eqNumberInput').value.trim();
+  const type = document.getElementById('typeSelectCheck').value;
+  const vendor = document.getElementById('vendorInput').value.trim();
+  const modem = document.getElementById('modemInput').value.trim();
+  const longitude = document.getElementById('longitudeInput').value.trim();
+  const latitude = document.getElementById('latitudeInput').value.trim();
+  let locationUrl = document.getElementById('locationUrlInput').value.trim();
+
+  if (!vendor || !modem) {
+    showToast('Please fill in Vendor and Modem.', 'warning');
+    return;
+  }
+
+  // If the agent didn't manually type a location link, but did provide both
+  // X and Y, auto-generate a Google Maps link from the coordinates.
+  if (!locationUrl && longitude && latitude) {
+    locationUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+  }
+
+  stationsToSubmit.push({
+    eq_number: eqNumber, type, vendor, modem,
+    longitude: longitude || null, latitude: latitude || null, location_url: locationUrl || null,
+  });
+
+  // Reset the form for the next station
+  document.getElementById('eqNumberInput').value = '';
+  document.getElementById('typeSelectCheck').value = '';
+  document.getElementById('vendorInput').value = '';
+  document.getElementById('modemInput').value = '';
+  document.getElementById('longitudeInput').value = '';
+  document.getElementById('latitudeInput').value = '';
+  document.getElementById('locationUrlInput').value = '';
+  document.getElementById('eqCheckResult').innerHTML = '';
+  document.getElementById('restOfForm').style.display = 'none';
+  eqNumberVerified = false;
+
+  renderStationsList();
+  showToast(`${eqNumber} added.`, 'success');
+}
+
+function removeStation(index) {
+  stationsToSubmit.splice(index, 1);
+  renderStationsList();
+}
+
+function renderStationsList() {
+  const empty = document.getElementById('stationsListEmpty');
+  const wrap = document.getElementById('stationsTableWrap');
+
+  document.getElementById('stationCountBadge').textContent = `${stationsToSubmit.length} stations`;
+
+  if (stationsToSubmit.length === 0) {
+    empty.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  empty.style.display = 'none';
+  wrap.style.display = 'block';
+
+  document.getElementById('stationsTableBody').innerHTML = stationsToSubmit.map((s, i) => `
+    <tr>
+      <td><strong>${escapeHtml(s.eq_number)}</strong></td>
+      <td>${escapeHtml(s.type)}</td>
+      <td>${escapeHtml(s.vendor)}</td>
+      <td>${escapeHtml(s.modem)}</td>
+      <td class="text-sm text-gray">${escapeHtml(s.longitude || '—')} / ${escapeHtml(s.latitude || '—')}</td>
+      <td><button class="btn btn-secondary btn-sm" onclick="removeStation(${i})">Remove</button></td>
+    </tr>
+  `).join('');
+}
+
+async function submitRequest() {
+  if (stationsToSubmit.length === 0) {
+    showToast('Please add at least one station.', 'warning');
+    return;
+  }
+
+  // Title is auto-generated from the first station's EQ Number — the agent
+  // never sees or types a title, since EQ Number is what matters to them.
+  const title = `Request for ${stationsToSubmit[0].eq_number}`;
+  const requestNo = await getNextRequestNumber();
+
+  const { data: newRequest, error: reqError } = await createRequest({
+    request_no: requestNo,
+    title,
+    remarks: null,
+    submitted_by_name: user.name,
+    submitted_by_payroll: user.payroll_no,
+    total_stations: stationsToSubmit.length,
+  });
+
+  if (reqError) {
+    showToast('Error creating request: ' + reqError.message, 'error', 6000);
+    return;
+  }
+
+  const stationRows = stationsToSubmit.map(s => ({
+    request_id: newRequest.id,
+    eq_number: s.eq_number,
+    type: s.type,
+    vendor: s.vendor,
+    modem: s.modem,
+    longitude: s.longitude,
+    latitude: s.latitude,
+    location_url: s.location_url,
+  }));
+
+  const { error: stationsError } = await insertRequestStationsBulk(stationRows);
+  if (stationsError) {
+    showToast('Request created but stations failed to save: ' + stationsError.message, 'error', 6000);
+    return;
+  }
+
+  // Register these stations in the master list too, so future requests
+  // correctly see them as already existing (EQ Number + Type combo).
+  const masterRows = stationsToSubmit.map(s => ({
+    eq_number: s.eq_number,
+    type: s.type,
+    vendor: s.vendor,
+    modem: s.modem,
+  }));
+  const { error: masterError } = await insertStationsMasterBulk(masterRows);
+  if (masterError) {
+    showToast('Request saved, but registering stations in the master list failed: ' + masterError.message, 'warning', 6000);
+  }
+
+  await writeAuditLog({
+    user_name: user.name,
+    action: 'REQUEST_SUBMITTED',
+    request_no: requestNo,
+    new_value: 'SUBMITTED',
+    remarks: `Request created with ${stationRows.length} stations`,
+  });
+
+  showToast(`Request ${requestNo} submitted successfully!`, 'success');
+  setTimeout(() => window.location.href = `request-detail.html?id=${newRequest.id}`, 1200);
+}
+</script>
+</body>
+</html>
