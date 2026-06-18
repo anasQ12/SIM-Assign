@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Request Detail — Station SIM/IP Assignment</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main-content">
+    <div class="topbar" id="topbar"></div>
+    <div class="page-content">
+
+      <div id="loadingState" class="loading-state">Loading request...</div>
+
+      <div id="content" style="display:none;">
+
+        <div class="card mb-24">
+          <div class="flex-between mb-12">
+            <div>
+              <div style="font-size:17px; font-weight:700;" id="reqTitle"></div>
+              <div class="text-sm text-gray" id="reqMeta"></div>
+            </div>
+            <div class="flex gap-8">
+              <span class="badge" id="reqStatusBadge"></span>
+            </div>
+          </div>
+          <div class="progress-bar-track" style="height:10px;">
+            <div class="progress-bar-fill" id="progressFill" style="width:0%;"></div>
+          </div>
+          <div class="text-sm text-gray" style="margin-top:6px;" id="progressText"></div>
+          <div id="remarksRow" class="text-sm" style="margin-top:12px; display:none;">
+            <strong>Remarks:</strong> <span id="reqRemarks"></span>
+          </div>
+        </div>
+
+        <div class="flex-between mb-16">
+          <div style="font-size:15px; font-weight:700;">Stations</div>
+          <div class="flex gap-8" id="actionButtons"></div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>EQ Number</th><th>Type</th><th>Vendor</th><th>Modem</th><th>Location</th>
+                  <th>Serial No</th><th>IP</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="stationsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="js/config.js"></script>
+<script src="js/toast.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/sidebar.js"></script>
+<script src="js/data.js"></script>
+<script>
+const user = requireAuth();
+const requestId = new URLSearchParams(window.location.search).get('id');
+
+if (user) {
+  renderSidebar(user, 'requests.html');
+  renderTopBar(user, 'Request Detail');
+}
+
+if (!requestId) {
+  window.location.href = 'requests.html';
+}
+
+let currentRequest = null;
+let currentStations = [];
+
+const STATUS_BADGE = {
+  SUBMITTED: 'badge-blue', IN_PROGRESS: 'badge-amber', PARTIALLY_ASSIGNED: 'badge-amber',
+  COMPLETED: 'badge-green', RETURNED: 'badge-red',
+};
+const ASSIGN_BADGE = { UNASSIGNED: 'badge-blue', ASSIGNED: 'badge-green', PENDING_SIM: 'badge-amber' };
+
+async function loadRequest() {
+  const { data: req, error: reqErr } = await fetchRequestById(requestId);
+  if (reqErr || !req) {
+    showToast('Request not found.', 'error');
+    setTimeout(() => window.location.href = 'requests.html', 1500);
+    return;
+  }
+  currentRequest = req;
+
+  const { data: stations, error: stErr } = await fetchStationsForRequest(requestId);
+  if (stErr) {
+    showToast('Error loading stations: ' + stErr.message, 'error');
+    return;
+  }
+  currentStations = stations || [];
+
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+  renderHeader();
+  renderActionButtons();
+  renderStationsTable();
+}
+
+function renderHeader() {
+  const r = currentRequest;
+  document.getElementById('reqTitle').textContent = `${r.request_no} — ${r.title}`;
+  document.getElementById('reqMeta').textContent = `Submitted by ${r.submitted_by_name} · ${currentStations.length} stations`;
+  document.getElementById('reqStatusBadge').className = `badge ${STATUS_BADGE[r.status] || 'badge-gray'}`;
+  document.getElementById('reqStatusBadge').textContent = r.status.replace(/_/g, ' ');
+
+  const assignedCount = currentStations.filter(s => s.assignment_status === 'ASSIGNED').length;
+  const pct = currentStations.length > 0 ? Math.round((assignedCount / currentStations.length) * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${assignedCount} of ${currentStations.length} stations assigned (${pct}%)`;
+
+  if (r.remarks) {
+    document.getElementById('remarksRow').style.display = 'block';
+    document.getElementById('reqRemarks').textContent = r.remarks;
+  }
+}
+
+function renderActionButtons() {
+  const buttons = [];
+  const r = currentRequest;
+
+  // Every role can export the current data at any time — useful for
+  // checking progress, and required once the request is done.
+  const label = r.status === 'COMPLETED' ? 'Download Final Excel' : 'Export Current Data';
+  buttons.push(`<button class="btn btn-success" onclick="generateFinalExcel()">&#128190; ${label}</button>`);
+
+  if (user.role === 'STN_SCADA' && r.status !== 'COMPLETED') {
+    buttons.push(`<a href="assign.html?id=${r.id}" class="btn btn-primary">Open Assignment →</a>`);
+  }
+
+  document.getElementById('actionButtons').innerHTML = buttons.join('');
+}
+
+function renderStationsTable() {
+  document.getElementById('stationsBody').innerHTML = currentStations.map(s => `
+    <tr>
+      <td><strong>${escapeHtml(s.eq_number)}</strong></td>
+      <td>${escapeHtml(s.type)}</td>
+      <td>${escapeHtml(s.vendor)}</td>
+      <td>${escapeHtml(s.modem)}</td>
+      <td class="text-sm">${s.location_url ? `<a href="${escapeHtml(s.location_url)}" target="_blank" rel="noopener">View</a>` : '—'}</td>
+      <td>${escapeHtml(s.serial_no || '—')}</td>
+      <td>${escapeHtml(s.ip || '—')}</td>
+      <td><span class="badge ${ASSIGN_BADGE[s.assignment_status] || 'badge-gray'}">${s.assignment_status.replace(/_/g, ' ')}</span></td>
+    </tr>
+  `).join('');
+}
+
+async function generateFinalExcel() {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Assignment');
+
+  sheet.columns = [
+    { header: 'Request No', key: 'request_no', width: 16 },
+    { header: 'EQ Number', key: 'eq_number', width: 14 },
+    { header: 'Type', key: 'type', width: 14 },
+    { header: 'Vendor', key: 'vendor', width: 14 },
+    { header: 'Modem', key: 'modem', width: 12 },
+    { header: 'X (Longitude)', key: 'longitude', width: 16 },
+    { header: 'Y (Latitude)', key: 'latitude', width: 16 },
+    { header: 'Location URL', key: 'location_url', width: 30 },
+    { header: 'SerialNo', key: 'serial_no', width: 16 },
+    { header: 'IP', key: 'ip', width: 16 },
+    { header: 'Assignment Status', key: 'assignment_status', width: 18 },
+    { header: 'Remarks', key: 'remarks', width: 20 },
+    { header: 'Assigned By', key: 'assigned_by_name', width: 16 },
+    { header: 'Assigned Date', key: 'assigned_at', width: 18 },
+  ];
+
+  sheet.getRow(1).font = { bold: true };
+  sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E5EA' } };
+
+  currentStations.forEach(s => {
+    sheet.addRow({
+      request_no: currentRequest.request_no,
+      eq_number: s.eq_number,
+      type: s.type,
+      vendor: s.vendor,
+      modem: s.modem,
+      longitude: s.longitude || '',
+      latitude: s.latitude || '',
+      location_url: s.location_url || '',
+      serial_no: s.serial_no || '',
+      ip: s.ip || '',
+      assignment_status: s.assignment_status,
+      remarks: s.remarks || '',
+      assigned_by_name: s.assigned_by_name || '',
+      assigned_at: s.assigned_at ? new Date(s.assigned_at).toLocaleString() : '',
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/octet-stream' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dateStr = new Date().toISOString().split('T')[0];
+  a.href = url;
+  a.download = `Station_SIM_IP_Assignment_${currentRequest.request_no}_${dateStr}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+
+  await writeAuditLog({
+    user_name: user.name,
+    action: 'FINAL_FILE_GENERATED',
+    request_no: currentRequest.request_no,
+    remarks: 'Final Excel file generated/downloaded',
+  });
+
+  showToast('Excel file downloaded.', 'success');
+}
+
+loadRequest();
+</script>
+</body>
+</html>
